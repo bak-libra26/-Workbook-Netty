@@ -1,0 +1,125 @@
+package com.bak.libra26;
+
+import java.util.*;
+
+import java.io.*;
+import java.net.InetSocketAddress;
+
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+
+
+public class NonBlockingServer {
+    private Map<SocketChannel, List<byte[]>> keepDataTrack = new HashMap<>();
+    private ByteBuffer buffer = ByteBuffer.allocate(2 * 1024);
+
+    public static void main(String[] args) {
+        NonBlockingServer main = new NonBlockingServer();
+        main.startEchoServer();
+    }
+
+    private void startEchoServer() {
+        try (
+            Selector selector = Selector.open();
+            ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
+        ) {
+            if ((serverSocketChannel.isOpen()) && (selector.isOpen())) {
+                serverSocketChannel.configureBlocking(false);
+                serverSocketChannel.bind(new InetSocketAddress(8888));
+
+                serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+                System.out.println("Wait to connet");
+
+                while (true) {
+                    selector.select();
+                    Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+
+                    while (keys.hasNext()) {
+                        SelectionKey key = (SelectionKey) keys.next();
+                        keys.remove();
+
+                        if (!key.isValid()) {
+                            continue;
+                        }
+
+                        if (key.isAcceptable()) {
+                            this.acceptOP(key, selector);
+                        }
+                        else if (key.isReadable()) {
+                            this.readOP(key);
+                        }
+                        else if (key.isWritable()) {
+                            this.writeOP(key);
+                        }
+                        else {
+                            System.out.println("Fail to create server socket");
+                        }
+                    }
+                }
+            }
+        } catch (IOException ex) {
+            System.out.println(ex);
+        }
+    }
+
+    private void acceptOP(SelectionKey key, Selector selector) throws IOException {
+        ServerSocketChannel serverSocketChannel = (ServerSocketChannel) key.channel();
+        SocketChannel socketChannel = serverSocketChannel.accept();
+        socketChannel.configureBlocking(false);
+
+        System.out.println("Connected client : " + socketChannel.getRemoteAddress());
+
+        keepDataTrack.put(socketChannel, new ArrayList<byte[]>());
+        socketChannel.register(selector, SelectionKey.OP_READ);
+    }
+
+    private void readOP(SelectionKey key) throws IOException {
+        try {
+            SocketChannel socketchannel = (SocketChannel) key.channel();
+
+            buffer.clear();
+            int numRead = -1;
+            try {
+                numRead = socketchannel.read(buffer);
+            } catch (IOException e) {
+                System.err.println("데이터 읽기 에러!");
+            }
+            if (numRead == -1) {
+                this.keepDataTrack.remove(socketchannel);
+                System.out.println("클라이언트 연결 종료: " + socketchannel.getRemoteAddress());
+                socketchannel.close();
+                key.cancel();
+                return;
+            }
+
+            byte[] data = new byte[numRead];
+            System.arraycopy(buffer.array(), 0, data, 0, numRead);
+            System.out.println(new String(data, "UTF-8") + " from " + socketchannel.getRemoteAddress());
+            doEchoJob(key, data);
+        } catch (IOException ex) {
+            System.err.println(ex);
+        }
+    }
+
+    private void writeOP (SelectionKey key) throws IOException {
+        SocketChannel socketchannel = (SocketChannel) key.channel();
+        List<byte[]> channelData = keepDataTrack.get(socketchannel);
+        Iterator<byte[]> its = channelData.iterator();
+        while (its.hasNext()) {
+            byte[] it = its.next();
+            its.remove();
+            socketchannel.write(ByteBuffer.wrap(it));
+        }
+        key.interestOps(SelectionKey.OP_READ);
+    }
+
+    private void doEchoJob(SelectionKey key, byte[] data){
+        SocketChannel socketchannel = (SocketChannel) key.channel();
+        List<byte[]> channelData = keepDataTrack.get(socketchannel);
+        channelData.add(data);
+        key.interestOps(SelectionKey.OP_WRITE);
+    }
+}
